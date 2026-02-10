@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+#=======================================================================
+# install-barrels.sh – Full system‑integrated installer for Barrels
+#
+# It:
+#   • Installs required Ubuntu/Debian packages
+#   • Clones the Barrels repo (https://github.com/cvrocks19-hash/Barrels)
+#   • Copies files to $HOME/.local/share/barrels
+#   • Installs the custom‑dock GNOME extension
+#   • Creates a systemd user service that runs Barrels as a background daemon
+#   • Installs a DBus‑enabled CLI wrapper (barrels-cli)
+#   • Adds a Desktop entry & pins the barrel icon to the GNOME Dock
+#=======================================================================
+set -euo pipefail
+
+# -------------------------------------------------------------
+# CONFIG – change only if you fork/rename the repo
+# -------------------------------------------------------------
+GH_USER="cvrocks19-hash"
+REPO="Barrels"
+BRANCH="main"
+
+# -------------------------------------------------------------
+# Helper functions for pretty output
+# -------------------------------------------------------------
+info() { echo -e "\e[32m[INFO]\e[0m $*"; }
+warn() { echo -e "\e[33m[WARN]\e[0m $*"; }
+err()  { echo -e "\e[31m[ERROR]\e[0m $*" >&2; exit 1; }
+
+# -------------------------------------------------------------
+# 0️⃣ Verify we are on a supported OS (Ubuntu/Debian)
+# -------------------------------------------------------------
+if [[ ! -f /etc/os-release ]]; then err "Cannot detect OS – /etc/os-release missing"; fi
+. /etc/os-release
+if [[ "$ID" != "ubuntu" && "$ID_LIKE" != *debian* ]]; then
+    err "Unsupported distribution $ID – this installer works on Ubuntu/Debian."
+fi
+
+# -------------------------------------------------------------
+# 1️⃣ Ensure required tools are present (git, curl, tar, python3, sudo)
+# -------------------------------------------------------------
+missing=()
+for cmd in git curl tar python3 sudo; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+done
+if (( ${#missing[@]} )); then
+    info "Installing missing dependencies: ${missing[*]}"
+    sudo apt-get update
+    sudo apt-get install -y "${missing[@]}"
+fi
+
+# -------------------------------------------------------------
+# 2️⃣ Create temporary workspace
+# -------------------------------------------------------------
+WORKDIR=$(mktemp -d)
+cleanup() { rm -rf "$WORKDIR"; }
+trap cleanup EXIT
+
+# -------------------------------------------------------------
+# 3️⃣ Clone the Barrels repository (shallow clone)
+# -------------------------------------------------------------
+info "Cloning ${GH_USER}/${REPO} (branch ${BRANCH}) …"
+git clone --depth 1 --branch "$BRANCH" \
+    "https://github.com/${GH_USER}/${REPO}.git" \
+    "$WORKDIR/${REPO}"
+
+# -------------------------------------------------------------
+# 4️⃣ Define installation destinations
+# -------------------------------------------------------------
+INSTALL_ROOT="${HOME}/.local/share/barrels"
+EXTENSION_DIR="${HOME}/.local/share/gnome-shell/extensions/custom-dock@barrels-app"
+ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
+SCHEMA_DIR="${HOME}/.local/share/glib-2.0/schemas"
+DESKTOP_DIR="${HOME}/.local/share/applications"
+SYSTEMD_DIR="${HOME}/.config/systemd/user"
+
+mkdir -p "$INSTALL_ROOT" "$EXTENSION_DIR" "$ICON_DIR" "$SCHEMA_DIR" "$DESKTOP_DIR" "$SYSTEMD_DIR"
+
+# -------------------------------------------------------------
+# 5️⃣ Copy core files (Python script, static assets, templates)
+# -------------------------------------------------------------
+info "Copying core files …"
+cp -r "$WORKDIR/$REPO/Barrels.py" "$INSTALL_ROOT/Barrels.py"
+chmod +x "$INSTALL_ROOT/Barrels.py"
+
+# static assets (including barrel.svg)
+cp -r "$WORKDIR/$REPO/static" "$INSTALL_ROOT/"
+# HTML templates (not needed for the native UI but keep them for completeness)
+cp -r "$WORKDIR/$REPO/templates" "$INSTALL_ROOT/"
+
+# -------------------------------------------------------------
+# 6️⃣ Install the custom‑dock GNOME extension
+# -------------------------------------------------------------
+info "Installing custom‑dock GNOME extension …"
+cp -r "$WORKDIR/$REPO/custom-dock-extension/"* "$EXTENSION_DIR/"
+
+# Compile the schema for the extension
+if [[ -f "$EXTENSION_DIR/org.gnome.shell.extensions.custom-dock.gschema.xml" ]]; then
+    cp "$EXTENSION_DIR/org.gnome.shell.extensions.custom-dock.gschema.xml" "$SCHEMA_DIR/"
+    glib-compile-schemas "$SCHEMA_DIR"
+    info "Extension schema compiled."
+else
+    warn "Extension GSettings schema not found – dock may not work properly."
+fi
+
+# -------------------------------------------------------------
+# 7️⃣ Install the barrel icon (SVG) and refresh the icon cache
+# -------------------------------------------------------------
+if [[ -f "$WORKDIR/$REPO/static/img/barrel.svg" ]]; then
+    cp "$WORKDIR/$REPO/static/img/barrel.svg" "$ICON_DIR/barrel.svg"
+    gtk-update-icon-cache -f "$HOME/.local/share/icons/hicolor"
+    info "Barrel icon installed."
+else
+    warn "Barrel SVG not found – skipping icon installation."
+fi
+
+# -------------------------------------------------------------
+# 8️⃣ Create the Desktop entry (appears in Activities → Applications)
+# -------------------------------------------------------------
+DESKTOP_FILE="${DESKTOP_DIR}/barrels.desktop"
+cat > "$DESKTOP_FILE" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Barrels
+Comment=Ubuntu Customizer – Themes, Dock, Settings
+Exec=${INSTALL_ROOT}/Barrels.py --cli
+Icon=barrel
+Categories=Utility;System;Settings;
+Terminal=false
+StartupNotify=true
+X-GNOME-Autostart-enabled=true
+EOF
+chmod +x "$DESKTOP_FILE"
+info "Desktop entry created at $DESKTOP_FILE"
+
+# -------------------------------------------------------------
+# 9️⃣ Pin the launcher to the GNOME Dock (add to favorite‑apps)
+# -------------------------------------------------------------
+CURRENT=$(gsettings get org.gnome.shell favorite-apps 2>/dev/null || echo "[]")
+if [[ "$CURRENT" != *"'barrels.desktop'"* ]]; then
+    NEW=$(echo "$CURRENT" | sed "s/]$/,'barrels.desktop']/")
+    gsettings set org.gnome.shell favorite-apps "$NEW"
+    info "Barrels pinned to the GNOME Dock."
+else
+    info "Barrels already pinned."
+fi
+
+# -------------------------------------------------------------
+# 10️⃣ Create a small wrapper script for CLI usage (barrels-cli)
+# -------------------------------------------------------------
+CLI_WRAPPER="/usr/local/bin/barrels-cli"
+cat > "$CLI_WRAPPER" <<'EOS'
+#!/usr/bin/env bash
+# Simple wrapper that forwards commands to the Barrels Python backend.
+# Usage: barrels-cli <subcommand> [args...]
+# Example: barrels-cli list-themes
+PYTHON_SCRIPT="${HOME}/.local/share/barrels/Barrels.py"
+
+if [[ ! -x "$PYTHON_SCRIPT" ]]; then
+    echo "Barrels script not found at $PYTHON_SCRIPT"
+    exit 1
+fi
+
+exec python3 "$PYTHON_SCRIPT" --cli "$@"
+EOS
+chmod +x "$CLI_WRAPPER"
+info "CLI wrapper installed at $CLI_WRAPPER"
+
+# -------------------------------------------------------------
+# 11️⃣ Create a systemd user service that runs Barrels as a daemon
+# -------------------------------------------------------------
+SERVICE_FILE="${SYSTEMD_DIR}/barrels.service"
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Barrels – Ubuntu Customizer (background daemon)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_ROOT}/Barrels.py --cli-daemon
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now barrels.service
+info "Systemd user service enabled and started."
+
+# -------------------------------------------------------------
+# 12️⃣ Final message
+# -------------------------------------------------------------
+echo
+info "============================================================"
+info " Barrels is now installed and running as a background service."
+info " - Desktop entry:   Open ‘Barrels’ from the Applications menu."
+info " - CLI usage:      barrels-cli <command>"
+info "   e.g.:           barrels-cli list-themes"
+info " - Dock icon:      A barrel icon should appear on your Desktop"
+info "                   and be pinned to the GNOME Dock."
+info " - Service status: systemctl --user status barrels.service"
+info "============================================================"
+echo
