@@ -1,0 +1,674 @@
+#!/usr/bin/env python3
+"""
+Barrels – Ubuntu Customizer
+
+Features:
+ • Appearance, Themes, Icons, Fonts, Window Management, Extensions,
+   Startup Apps, Shortcuts, Dock, Power, Workspaces, Accessibility
+"""
+
+import subprocess, sys, os, json, shutil, tarfile, zipfile
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple, Union
+
+# ----------------------------------------------------------------------
+# Flask – optional (installed via apt/requirements). If Flask is not
+# available the script falls back to the original CLI mode.
+# ----------------------------------------------------------------------
+try:
+    from flask import Flask, render_template, url_for, redirect, flash, request
+except Exception:        # pragma: no cover
+    Flask = None   # type: ignore
+
+# ----------------------------------------------------------------------
+# MAIN CLASS – UbuntuCustomizer (all logic lives here)
+# ----------------------------------------------------------------------
+class UbuntuCustomizer:
+    # --------------------------------------------------------------
+    #  __init__ – build data structures
+    # --------------------------------------------------------------
+    def __init__(self) -> None:
+        # ---------- paths ----------
+        self.extension_dir = Path(__file__).parent / "custom-dock-extension"
+        self.config_file = Path.home() / ".config/ubuntu-customizer/config.json"
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # ---------- system checks ----------
+        self.check_extension_installed()
+        self.load_config()
+
+        # ---------- FEATURE MAP (top‑level menu) ----------
+        self.features: Dict[str, Dict] = {
+            "themes":        {"description": "Install & preview GTK themes", "submenu": True},
+            "icons":         {"description": "Install & preview icon themes", "submenu": True},
+            "dock":          {"description": "Configure dock (position, style, animations)", "submenu": True},
+            "appearance":    {"description": "General appearance options", "submenu": True},
+            "window_manager":{"description": "Window‑manager behaviour", "submenu": True},
+            "keyboard":      {"description": "Keyboard shortcuts & input", "submenu": True},
+            "extensions":    {"description": "GNOME Shell extensions", "package": "gnome-shell-extensions"},
+            "startup_apps":  {"description": "Manage startup applications", "submenu": True},
+            "power":         {"description": "Power & performance", "submenu": True},
+            "workspaces":    {"description": "Workspace configuration", "submenu": True},
+            "accessibility": {"description": "Accessibility features", "submenu": True},
+        }
+
+        # -----------------------------------------------------------------
+        #  THEME DATABASE (all the itsfoss.com themes)
+        # -----------------------------------------------------------------
+        self.themes_options: Dict[str, Dict] = {
+            # ----- Git‑based themes -------------------------------------------------
+            "adapta": {
+                "name": "Adapta GTK Theme",
+                "description": "Material‑Design based theme (light & dark)",
+                "package": "adapta-gtk-theme",
+                "variants": ["light", "dark"],
+                "preview_image": "adapta.png"
+            },
+            "arc": {
+                "name": "Arc Theme",
+                "description": "Flat, modern theme (Arc, Arc‑Dark, Arc‑Darker)",
+                "git_url": "https://github.com/horst3180/arc-theme.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark", "darker"],
+                "preview_image": "arc.png"
+            },
+            "candy": {
+                "name": "Candy Theme",
+                "description": "Cute & colorful (light & dark)",
+                "git_url": "https://github.com/EliverLara/candy-icons.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark"],
+                "preview_image": "candy.png"
+            },
+            "dracula": {
+                "name": "Dracula Theme",
+                "description": "Dark theme with purple‑pink accents",
+                "git_url": "https://github.com/dracula/gtk.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["dark"],
+                "preview_image": "dracula.png"
+            },
+            "gruvbox": {
+                "name": "Gruvbox Theme",
+                "description": "Retro‑gaming palette (light & dark)",
+                "git_url": "https://github.com/Alvatip/gtk-gruvbox.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark"],
+                "preview_image": "gruvbox.png"
+            },
+            "gtk-candy": {
+                "name": "GTK‑Candy",
+                "description": "Pastel‑coloured theme (light + dark)",
+                "git_url": "https://github.com/EliverLara/gtk-candy.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark"],
+                "preview_image": "gtk-candy.png"
+            },
+            "materia": {
+                "name": "Materia Theme",
+                "description": "Material‑Design inspired (light, dark, ambiance)",
+                "package": "materia-gtk-theme",
+                "variants": ["light", "dark", "ambiance"],
+                "preview_image": "materia.png"
+            },
+            "nordic": {
+                "name": "Nordic Theme",
+                "description": "Arctic, north‑bluesh palette (light & dark)",
+                "git_url": "https://github.com/EliverLara/Nordic.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark"],
+                "preview_image": "nordic.png"
+            },
+            "oomox": {
+                "name": "Oomox (generated) Theme",
+                "description": "Customisable colour generator",
+                "package": "oomox",
+                "variants": [],
+                "preview_image": "oomox.png"
+            },
+            "orida": {
+                "name": "Orida Theme",
+                "description": "Simple, minimal (light & dark)",
+                "git_url": "https://github.com/Orida-Theme/Orida-gtk-theme.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark"],
+                "preview_image": "orida.png"
+            },
+            "plano": {
+                "name": "Plano Theme",
+                "description": "Flat, low‑contrast (light & dark)",
+                "git_url": "https://github.com/EliverLara/plano-theme.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark"],
+                "preview_image": "plano.png"
+            },
+            "pop": {
+                "name": "Pop GTK Theme",
+                "description": "Elegant (light, dark, pop‑dark)",
+                "git_url": "https://github.com/pop-os/gtk-theme.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark", "pop-dark"],
+                "preview_image": "pop.png"
+            },
+            "vimix": {
+                "name": "Vimix Theme",
+                "description": "Vivid colourful (light & dark)",
+                "git_url": "https://github.com/vinceliuice/vimix-gtk-theme.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark"],
+                "preview_image": "vimix.png"
+            },
+            # ----- Original themes you already had ---------------------------------
+            "orchis": {
+                "name": "Orchis Theme",
+                "description": "Modern, colourful GTK theme (Git‑based)",
+                "git_url": "https://github.com/vinceliuice/Orchis-theme.git",
+                "install_script": "install.sh",
+                "type": "git",
+                "variants": ["light", "dark"],
+                "preview_image": "orchis.png"
+            },
+            "whitesur": {
+                "name": "WhiteSur Theme",
+                "description": "macOS Big Sur inspired",
+                "package": "whitesur-gtk-theme",
+                "variants": ["light", "dark"],
+                "preview_image": "whitesur.png"
+            },
+            "nord": {
+                "name": "Nord Theme",
+                "description": "Arctic, north‑bluesh palette",
+                "package": "nord-theme",
+                "variants": ["light", "dark"],
+                "preview_image": "nord.png"
+            },
+            "layan": {
+                "name": "Layan Theme",
+                "description": "Beautiful modern theme",
+                "package": "layan-gtk-theme",
+                "variants": ["light", "dark"],
+                "preview_image": "layan.png"
+            },
+        }
+
+        # -----------------------------------------------------------------
+        #  ICON THEME DATABASE (unchanged – you already have it)
+        # -----------------------------------------------------------------
+        self.icons_options = {
+            "papirus": {"name": "Papirus Icon Theme","description":"Colourful material icons","package":"papirus-icon-theme"},
+            "flat_remix": {"name":"Flat‑Remix Icon Theme","description":"Flat minimalist set","package":"flat-remix-icon-theme"},
+            "candy": {"name":"Candy Icon Theme","description":"Cute colorful icons","package":"candy-icon-theme"},
+            "tela": {"name":"Tela Icon Theme","description":"Modern monochrome","package":"tela-icon-theme"},
+            "tela_circle": {"name":"Tela Circle Icon Theme","description":"Circular backgrounds","package":"tela-circle-icon-theme"},
+            "whitesur_icons": {"name":"WhiteSur Icon Theme","description":"macOS style","package":"whitesur-icon-theme"},
+            "obsidian": {"name":"Obsidian Icon Theme","description":"Dark elegant","package":"obsidian-icon-theme"},
+            "fluent": {"name":"Fluent Icon Theme","description":"Windows‑11 Fluent","package":"fluent-icon-theme"},
+            "yaru": {"name":"Yaru Icon Theme","description":"Ubuntu official","package":"yaru-theme-icon"},
+        }
+
+        # -----------------------------------------------------------------
+        #  DOCK OPTIONS (used by the UI)
+        # -----------------------------------------------------------------
+        self.dock_options = {
+            "position": "Set dock position (top, bottom, left, right)",
+            "style": "Configure dock style (rounded, thin)",
+            "auto_hide": "Toggle dock auto‑hide on hover",
+            "animations": "Toggle dock animations (bump, bubble)",
+        }
+
+    # ----------------------------------------------------------------------
+    #  BASIC HELPERS – system, config, command execution, gsettings
+    # ----------------------------------------------------------------------
+    def check_system(self) -> bool:
+        """Return True only on Ubuntu/Debian with GNOME."""
+        try:
+            if sys.platform != "linux":
+                return False
+            with open("/etc/os-release", "r") as f:
+                txt = f.read().lower()
+                return ("ubuntu" in txt) or ("debian" in txt)
+        except Exception:
+            return False
+
+    def check_extension_installed(self) -> bool:
+        """Detect the custom‑dock extension."""
+        ext_path = Path.home() / ".local/share/gnome-shell/extensions/custom-dock@barrels-app"
+        self.extension_installed = ext_path.exists()
+        return self.extension_installed
+
+    # ----------------------------------------------------------------------
+    #  CONFIG
+    # ----------------------------------------------------------------------
+    def load_config(self) -> None:
+        if self.config_file.is_file():
+            try:
+                with open(self.config_file, "r") as f:
+                    self.config = json.load(f)
+                return
+            except Exception:
+                pass
+        self.config = {"setup_completed": False}
+        self.save_config()
+
+    def save_config(self) -> None:
+        try:
+            with open(self.config_file, "w") as f:
+                json.dump(self.config, f, indent=2)
+        except Exception as e:
+            print(f"⚠ Could not write config: {e}")
+
+    # ----------------------------------------------------------------------
+    #  COMMAND EXECUTION
+    # ----------------------------------------------------------------------
+    def run_command(self, cmd: List[str], sudo: bool = False) -> Tuple[bool, str]:
+        """Run a command (optionally with sudo). Returns (ok, output)."""
+        try:
+            if sudo:
+                cmd = ["sudo"] + cmd
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return True, result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            return False, e.stderr.strip()
+
+    # ----------------------------------------------------------------------
+    #  GSETTINGS WRAPPERS
+    # ----------------------------------------------------------------------
+    def _type_cast(self, value: Union[str, int, bool], value_type: str) -> str:
+        """Normalize for gsettings."""
+        if value_type == "i":
+            return str(int(value))
+        if value_type == "b":
+            return "true" if str(value).lower() in ("true", "1", "yes", "y") else "false"
+        return str(value)
+
+    def set_gsetting(
+        self,
+        schema: str,
+        key: str,
+        value: Union[str, int, bool],
+        value_type: str = "s",
+    ) -> bool:
+        val = self._type_cast(value, value_type)
+        if value_type == "i":
+            cmd = ["gsettings", "set", schema, key, "int32", val]
+        elif value_type == "b":
+            cmd = ["gsettings", "set", schema, key, "boolean", val]
+        else:
+            cmd = ["gsettings", "set", schema, key, val]
+        ok, _ = self.run_command(cmd)
+        return ok
+
+    def get_gsetting(self, schema: str, key: str) -> Optional[str]:
+        ok, out = self.run_command(["gsettings", "get", schema, key])
+        if ok:
+            return out.strip()
+        return None
+
+    # ----------------------------------------------------------------------
+    #  INITIAL SETUP (runs once on first launch)
+    # ----------------------------------------------------------------------
+    def run_initial_setup(self) -> bool:
+        if self.config.get("setup_completed"):
+            return True
+
+        print("\n" + "=" * 50)
+        print("  Barrels – Initial Setup")
+        print("=" * 50 + "\n")
+        print("Preparing required extensions & packages …\n")
+
+        success = True
+
+        # 1️⃣ GNOME Shell extensions package
+        print("1️⃣ Installing GNOME Shell extensions package …")
+        if self._install_pkg_feedback("gnome-shell-extensions"):
+            print("   ✓ installed")
+        else:
+            print("   ⚠ could not install – you may need to run later")
+            success = False
+
+        # 2️⃣ Custom Dock extension
+        print("\n2️⃣ Installing Custom Dock extension …")
+        if self.install_custom_dock_extension():
+            print("   ✓ extension installed")
+        else:
+            print("   ⚠ extension install failed")
+            success = False
+
+        # 3️⃣ Recommended extras
+        print("\n3️⃣ Installing recommended extras (Papirus, Ubuntu fonts, GNOME‑Tweaks)…")
+        for pkg, friendly in [
+            ("papirus-icon-theme", "Papirus icons"),
+            ("fonts-ubuntu", "Ubuntu fonts"),
+            ("gnome-tweaks", "GNOME Tweaks"),
+        ]:
+            ok, _ = self.run_command(["sudo", "apt-get", "install", "-y", pkg])
+            print(f"   {'✓' if ok else '✗'} {friendly}")
+
+        print("\n" + "=" * 50)
+        print("  Setup complete!")
+        print("=" * 50 + "\n")
+        self.config["setup_completed"] = True
+        self.save_config()
+        input("Press Enter to continue…")
+        return success
+
+    def _install_pkg_feedback(self, pkg: str) -> bool:
+        ok, _ = self.run_command(["sudo", "apt-get", "install", "-y", pkg])
+        return ok
+
+    # ----------------------------------------------------------------------
+    #  CUSTOM DOCK EXTENSION INSTALLER (unchanged from previous version)
+    # ----------------------------------------------------------------------
+    def install_custom_dock_extension(self) -> bool:
+        target = Path.home() / ".local/share/gnome-shell/extensions/custom-dock@barrels-app"
+        target.mkdir(parents=True, exist_ok=True)
+
+        # wipe any old copy
+        if target.exists():
+            shutil.rmtree(target)
+
+        try:
+            shutil.copytree(self.extension_dir, target)
+        except Exception as e:
+            print(f"✗ Error copying extension files: {e}")
+            return False
+
+        schema_src = target / "org.gnome.shell.extensions.custom-dock.gschema.xml"
+        if not schema_src.is_file():
+            print("✗ Schema file missing")
+            return False
+
+        # Compile schema (local)
+        self.run_command(["glib-compile-schemas", str(target)])
+
+        # System‑wide copy (requires sudo)
+        sys_schema_dir = "/usr/share/glib-2.0/schemas"
+        self.run_command(["sudo", "cp", str(schema_src), f"{sys_schema_dir}/"])
+        self.run_command(["sudo", "glib-compile-schemas", sys_schema_dir])
+        self.extension_installed = True
+        return True
+
+    # ----------------------------------------------------------------------
+    #  MENU DISPLAY (CLI) – unchanged except for a link to the new UI page
+    # ----------------------------------------------------------------------
+    def list_features(self) -> None:
+        print("\n" + "=" * 50)
+        print("  BARRELS – MAIN MENU")
+        print("=" * 50 + "\n")
+        for i, (key, meta) in enumerate(self.features.items(), start=1):
+            arrow = "▶" if meta.get("submenu") else "●"
+            print(f"{i}. {arrow} {key.replace('_', ' ').title()}")
+            print(f"   {meta['description']}\n")
+        # extra link to the theme‑gallery page
+        print("   t. Themes (preview)")
+        print("\nEnter 'q' to quit, 'b' to go back.\n")
+
+    # ----------------------------------------------------------------------
+    #  SUB‑MENUS (Themes, Icons, Dock, etc.) – mostly unchanged.
+    # ----------------------------------------------------------------------
+    # ---- Themes (now shows preview images, uses the new install logic) ----
+    def show_themes_menu(self) -> None:
+        """CLI fallback – prints the same table as the web UI."""
+        print("\n=== Themes (preview) ===\n")
+        for i, (key, th) in enumerate(self.themes_options.items(), start=1):
+            print(f"{i}. {th['name']}")
+            print(f"   {th['description']}")
+            if th.get("preview_image"):
+                print(f"   preview: {th['preview_image']}")
+            print()
+        choice = input("Select a theme number (or 'b' to go back): ").strip().lower()
+        if choice == "b":
+            return
+        try:
+            idx = int(choice) - 1
+            theme_key = list(self.themes_options.keys())[idx]
+            self.install_and_apply_theme(theme_key)
+        except (ValueError, IndexError):
+            print("Invalid selection")
+
+    # ----------------------------------------------------------------------
+    #  ONE‑LINER INSTALLER FOR A SINGLE APT PACKAGE (used by the UI)
+    # ----------------------------------------------------------------------
+    def install_package(self, package: str, feature_name: str) -> None:
+        print(f"\n🔧 Installing {feature_name} …")
+        ok, out = self.run_command(["sudo", "apt-get", "install", "-y", package])
+        if ok:
+            print(f"✅ {feature_name} installed")
+        else:
+            print(f"❌ Failed to install {feature_name}")
+            print(out)
+
+    # ----------------------------------------------------------------------
+    #  THEME INSTALL / APPLY – NEW unified implementation
+    # ----------------------------------------------------------------------
+    def install_and_apply_theme(self, theme_key: str) -> None:
+        """Installs a theme (apt‑ or git‑based) and then asks for a variant."""
+        if theme_key not in self.themes_options:
+            print("⚠ Unknown theme")
+            return
+        th = self.themes_options[theme_key]
+        name = th["name"]
+        print(f"\n🛠️  Installing {name} …")
+
+        # -------------------------------------------------------------
+        # 1️⃣  Decide install method
+        # -------------------------------------------------------------
+        if th.get("type") == "git":
+            ok = self.install_theme_from_git(th)
+        else:
+            pkg = th.get("package")
+            if not pkg:
+                print("⚠ No installation method defined for this theme")
+                return
+            ok, _ = self.run_command(["sudo", "apt-get", "install", "-y", pkg])
+
+        # -------------------------------------------------------------
+        # 2️⃣  If install succeeded → ask for variant and apply
+        # -------------------------------------------------------------
+        if ok:
+            print(f"✅ {name} installed")
+            variants = th.get("variants", [])
+            if variants:
+                print("\nAvailable variants:")
+                for i, v in enumerate(variants, start=1):
+                    print(f" {i}. {v.title()}")
+                sel = input(f"Select variant (1‑{len(variants)}): ").strip()
+                try:
+                    idx = int(sel) - 1
+                    variant = variants[idx]
+                except Exception:
+                    print("Invalid – using first variant")
+                    variant = variants[0]
+                self.apply_theme(theme_key, variant)
+            else:
+                self.apply_theme(theme_key, "")
+        else:
+            print(f"❌ Failed to install {name}")
+
+    # ----------------------------------------------------------------------
+    #  GIT‑based theme installer (the heavy‑lifting for the itsfoss list)
+    # ----------------------------------------------------------------------
+    def install_theme_from_git(self, theme_info: Dict) -> bool:
+        """
+        Clone the repo under ~/.cache/barrels‑git/, run its install script,
+        and make sure the theme ends up in ~/.themes or /usr/share/themes.
+        Returns True on success.
+        """
+        git_url = theme_info.get("git_url")
+        if not git_url:
+            print("⚠ No git_url defined")
+            return False
+
+        cache_dir = Path.home() / ".cache" / "barrels-git"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        repo_name = git_url.rstrip("/").split("/")[-1].replace(".git", "")
+        dest = cache_dir / repo_name
+
+        # ---------------------------------------------------------
+        # 1️⃣  Clone or pull
+        # ---------------------------------------------------------
+        if dest.is_dir():
+            ok, out = self.run_command(["git", "-C", str(dest), "pull"])
+            if not ok:
+                print(f"⚠ git pull failed: {out}")
+                return False
+        else:
+            ok, out = self.run_command(["git", "clone", git_url, str(dest)])
+            if not ok:
+                print(f"⚠ git clone failed: {out}")
+                return False
+
+        # ---------------------------------------------------------
+        # 2️⃣  Run install script (first as normal user)
+        # ---------------------------------------------------------
+        script = theme_info.get("install_script", "install.sh")
+        script_path = dest / script
+        if not script_path.is_file():
+            print(f"⚠ Install script not found: {script_path}")
+            return False
+
+        # Use XDG_DATA_HOME so the script writes to ~/.local/share/themes
+        env = os.environ.copy()
+        env["XDG_DATA_HOME"] = str(Path.home() / ".local" / "share")
+        ok, out = self.run_command(["bash", str(script_path)], sudo=False)
+        if not ok:
+            # fallback to sudo (system‑wide install)
+            print("⚠ User‑local install failed – trying sudo…")
+            ok, out = self.run_command(["sudo", "bash", str(script_path)], sudo=False)
+            if not ok:
+                print(f"❌ Install script failed: {out}")
+                return False
+
+        # ---------------------------------------------------------
+        # 3️⃣  Verify theme directory exists
+        # ---------------------------------------------------------
+        theme_name = theme_info["name"].split()[0].lower()      # e.g. “Orchis”
+        user_path = Path.home() / ".themes" / theme_name
+        sys_path  = Path("/usr/share/themes") / theme_name
+        if user_path.is_dir() or sys_path.is_dir():
+            print(f"✅ Theme installed ({user_path if user_path.is_dir() else sys_path})")
+            return True
+
+        print("⚠ Could not locate installed theme folder")
+        return False
+
+    # ----------------------------------------------------------------------
+    #  APPLY THEME (sets the GTK theme GSettings key)
+    # ----------------------------------------------------------------------
+    def apply_theme(self, theme_key: str, variant: str = "") -> None:
+        """Apply a theme (optionally with a variant)."""
+        meta = self.themes_options[theme_key]
+        base_name = meta["name"].split()[0]      # e.g. “Orchis”
+        if variant:
+            gtk_name = f"{base_name}-{variant.capitalize()}"
+        else:
+            gtk_name = base_name
+        success = self.set_gsetting("org.gnome.desktop.interface", "gtk-theme", gtk_name)
+        if success:
+            print(f"✅ Theme set to {gtk_name}")
+        else:
+            print(f"❌ Could not apply {gtk_name}")
+
+    # ----------------------------------------------------------------------
+    #  FLASK WEB UI – optional. Starts only if Flask is installed.
+    # ----------------------------------------------------------------------
+    def launch_web_ui(self, host: str = "127.0.0.1", port: int = 5000) -> None:
+        if Flask is None:                     # pragma: no cover
+            print("⚠ Flask not installed – falling back to CLI.")
+            self.run()
+            return
+
+        app = Flask(__name__, static_folder="static", template_folder="templates")
+        app.config["SECRET_KEY"] = "barrels-secret"
+
+        # -----------------------------------------------------------------
+        #  Main index page – grid of top‑level features
+        # -----------------------------------------------------------------
+        @app.route("/")
+        def index():
+            items = []
+            for key, meta in self.features.items():
+                label = key.replace("_", " ").title()
+                if meta.get("submenu"):
+                    items.append((label, url_for("submenu", name=key)))
+                else:
+                    items.append((label, url_for("install_pkg", name=key)))
+            # extra link to the theme gallery
+            items.append(("Themes (preview)", url_for("themes_page")))
+            items.append(("Quit / close browser", "#"))
+            return render_template("index.html", items=items)
+
+        # -----------------------------------------------------------------
+        #  Sub‑menu dispatcher (CLI‑style menus still work)
+        # -----------------------------------------------------------------
+        @app.route("/submenu/<name>")
+        def submenu(name):
+            method = getattr(self, f"show_{name}_menu", None)
+            if method:
+                method()
+                flash(f"'{name.title()}' submenu finished")
+            else:
+                flash(f"No submenu for '{name}'")
+            return redirect(url_for("index"))
+
+        @app.route("/install/<name>")
+        def install_pkg(name):
+            meta = self.features.get(name, {})
+            pkg = meta.get("package")
+            if pkg:
+                self.install_package(pkg, name)
+                flash(f"Package '{pkg}' installed")
+            else:
+                flash("No package defined")
+            return redirect(url_for("index"))
+
+        # -----------------------------------------------------------------
+        #  Theme gallery page (cards with preview images)
+        # -----------------------------------------------------------------
+        @app.route("/themes")
+        def themes_page():
+            return render_template("themes.html", themes=self.themes_options)
+
+        @app.route("/apply_theme/<theme_key>")
+        def apply_theme_route(theme_key):
+            if theme_key not in self.themes_options:
+                flash("Invalid theme")
+                return redirect(url_for("themes_page"))
+            self.install_and_apply_theme(theme_key)
+            flash(f"Theme '{self.themes_options[theme_key]['name']}' installed/applied")
+            return redirect(url_for("themes_page"))
+
+        # -----------------------------------------------------------------
+        #  Dock configuration page (existing UI, unchanged)
+        # -----------------------------------------------------------------
+        @app.route("/dock")
+        def dock_page():
+            cur = {
+                "position": self.get_gsetting("org.gnome.shell.extensions.custom-dock", "dock-position") or "bottom",
+                "style": self.get_gsetting("org.gnome.shell.extensions.custom-dock", "dock-style") or "rounded",
+                "autohide": self.get_gsetting("org.gnome.shell.extensions.custom-dock", "autohide") or "false",
+                "animations": self.get_gsetting("org.gnome.shell.extensions.custom-dock", "animations-enabled") or "false",
+                "zoom_factor": self.get_gsetting("org.gnome.shell.extensions.custom-dock", "zoom-factor") or "1.0",
+                "duration": self.get_gsetting("org.gnome.shell.extensions.custom-dock", "animation-duration") or "200",
+            }
+            return render_template("dock.html", cur=cur)
+
+        @app.route("/dock/save", methods=["POST"])
+        def dock_save():
+            pos = request.form.get("position")
+            style = request.form.get("style")
