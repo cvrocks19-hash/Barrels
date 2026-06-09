@@ -3,10 +3,12 @@ package com.taskflow.android.data
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import java.time.LocalDateTime
+import java.util.UUID
 
 @Entity(tableName = "tasks")
 data class Task(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val syncId: String = UUID.randomUUID().toString(),  // stable cross-device ID
     val title: String,
     val description: String = "",
     val dueDate: LocalDateTime? = null,
@@ -15,9 +17,10 @@ data class Task(
     val isHabit: Boolean = false,
     val recurrence: Recurrence? = null,
     val createdAt: LocalDateTime = LocalDateTime.now(),
+    val updatedAt: LocalDateTime = LocalDateTime.now(),  // last-write-wins conflict key
     val completedAt: LocalDateTime? = null,
 )
 
-enum class Priority { LOW, MEDIUM, HIGH }
-enum class Status   { TODO, IN_PROGRESS, DONE }
+enum class Priority   { LOW, MEDIUM, HIGH }
+enum class Status     { TODO, IN_PROGRESS, DONE }
 enum class Recurrence { DAILY, WEEKLY, BIWEEKLY, MONTHLY, CUSTOM }

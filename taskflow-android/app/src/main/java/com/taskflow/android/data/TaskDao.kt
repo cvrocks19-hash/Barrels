@@ -35,6 +35,9 @@ interface TaskDao {
     @Query("SELECT * FROM tasks WHERE id = :id")
     suspend fun getById(id: Long): Task?
 
+    @Query("SELECT * FROM tasks WHERE syncId = :syncId LIMIT 1")
+    suspend fun getBySyncId(syncId: String): Task?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(task: Task): Long
 
@@ -44,8 +47,12 @@ interface TaskDao {
     @Delete
     suspend fun delete(task: Task)
 
-    @Query("UPDATE tasks SET status = :status, completedAt = :completedAt WHERE id = :id")
-    suspend fun updateStatus(id: Long, status: String, completedAt: String?)
+    @Query("""
+        UPDATE tasks
+        SET status = :status, completedAt = :completedAt, updatedAt = :updatedAt
+        WHERE id = :id
+    """)
+    suspend fun updateStatus(id: Long, status: String, completedAt: String?, updatedAt: String)
 
     @Query("SELECT COUNT(*) FROM tasks WHERE status != 'DONE' AND isHabit = 0")
     fun countPending(): Flow<Int>
